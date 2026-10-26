@@ -7,15 +7,12 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Path
-import android.graphics.Region
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -148,15 +145,9 @@ class OverlayService : Service() {
         private var angleDegrees=0f
         private var pivotScreenX=0f
         private var pivotScreenY=0f
-        private val touchRegion = Region()
-        private val touchPath = Path()
-        private val touchPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE
-            strokeCap = android.graphics.Paint.Cap.ROUND
-        }
-        private val insetsListener = ViewTreeObserver.OnComputeInternalInsetsListener { info ->
-            // This overlay window fills the screen width, but only the visible line and its
-            // endpoint handles should receive touches. Everything else passes through to the app below.
+        // Android SDK does not expose the internal-insets touch-region API to ordinary apps.
+        // Filter ACTION_DOWN against the actual rotated line so touches elsewhere never move it.
+        private fun isTouchNearLine(x: Float, y: Float): Boolean {
             val radians = Math.toRadians(angleDegrees.toDouble())
             val cx = lineLeft + lineWidth / 2f
             val cy = height / 2f
@@ -165,25 +156,14 @@ class OverlayService : Service() {
             val y1 = cy - half * kotlin.math.sin(radians).toFloat()
             val x2 = cx + half * kotlin.math.cos(radians).toFloat()
             val y2 = cy + half * kotlin.math.sin(radians).toFloat()
-            touchPath.reset()
-            touchPath.moveTo(x1, y1)
-            touchPath.lineTo(x2, y2)
-            touchPaint.strokeWidth = maxOf(dp(24).toFloat(), lineThickness + handle * 2f)
-            val stroked = Path()
-            touchPaint.getFillPath(touchPath, stroked)
-            val clip = Region(0, 0, width.coerceAtLeast(1), height.coerceAtLeast(1))
-            touchRegion.setEmpty()
-            touchRegion.setPath(stroked, clip)
-            info.setTouchableInsets(ViewTreeObserver.InternalInsetsInfo.TOUCHABLE_INSETS_REGION)
-            info.touchableRegion.set(touchRegion)
-        }
-        override fun onAttachedToWindow() {
-            super.onAttachedToWindow()
-            viewTreeObserver.addOnComputeInternalInsetsListener(insetsListener)
-        }
-        override fun onDetachedFromWindow() {
-            if (viewTreeObserver.isAlive) viewTreeObserver.removeOnComputeInternalInsetsListener(insetsListener)
-            super.onDetachedFromWindow()
+            val vx = x2 - x1
+            val vy = y2 - y1
+            val len2 = vx * vx + vy * vy
+            val t = if (len2 == 0f) 0f else (((x - x1) * vx + (y - y1) * vy) / len2).coerceIn(0f, 1f)
+            val px = x1 + t * vx
+            val py = y1 + t * vy
+            val tolerance = maxOf(dp(18).toFloat(), lineThickness + handle * 1.5f)
+            return kotlin.math.hypot((x - px).toDouble(), (y - py).toDouble()) <= tolerance
         }
         fun setColor(c: Int) { lineColor=c; invalidate() }
         fun setThickness(t: Int) { lineThickness=t.toFloat(); invalidate() }
@@ -223,6 +203,7 @@ class OverlayService : Service() {
             val p=layoutParamsOverlay ?: return false
             when(event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (!isTouchNearLine(event.x, event.y)) return false
                     selectLine(this); startX=event.rawX; startWidth=lineWidth.toInt(); lastRawY=event.rawY
                     val cy=height/2f
                     val localX=event.x; val localY=event.y
