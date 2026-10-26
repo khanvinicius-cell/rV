@@ -78,12 +78,10 @@ class OverlayService : Service() {
         row1.addView(btn("Excluir") { selected?.let { removeLine(it) } }, weight())
         row1.addView(btn("Limpar") { lines.toList().forEach { removeLine(it) } }, weight())
         content.addView(row1)
-        val rotateRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
-        rotateRow.addView(btn("↶ 15°") { selected?.rotateBy(-15f) }, weight())
-        rotateRow.addView(btn("↷ 15°") { selected?.rotateBy(15f) }, weight())
-        rotateRow.addView(btn("Zerar ângulo") { selected?.setAngle(0f) }, weight())
-        content.addView(rotateRow)
-        content.addView(TextView(this).apply { text="Gire a linha selecionada em passos de 15°"; textSize=12f; setTextColor(Color.DKGRAY) })
+        content.addView(TextView(this).apply {
+            text="Arraste o corpo para mover. Arraste uma ponta para girar em torno da outra."
+            textSize=12f; setTextColor(Color.DKGRAY); setPadding(0, dp(4), 0, dp(4))
+        })
         content.addView(TextView(this).apply { text="Cor da linha selecionada"; setTextColor(Color.DKGRAY); setPadding(0,dp(8),0,0) })
         val row2 = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         row2.addView(btn("Cor anterior") { colorIndex=(colorIndex+colors.size-1)%colors.size; selected?.setColor(colors[colorIndex]) }, weight())
@@ -145,6 +143,8 @@ class OverlayService : Service() {
         private var lineWidth=resources.displayMetrics.widthPixels.toFloat()
         private var lineLeft=0f
         private var angleDegrees=0f
+        private var pivotScreenX=0f
+        private var pivotScreenY=0f
         init { setLayerType(View.LAYER_TYPE_SOFTWARE, null); setBackgroundColor(Color.TRANSPARENT) }
         fun setColor(c: Int) { lineColor=c; invalidate() }
         fun setThickness(t: Int) { lineThickness=t.toFloat(); invalidate() }
@@ -187,20 +187,60 @@ class OverlayService : Service() {
                     selectLine(this); startX=event.rawX; startWidth=lineWidth.toInt(); lastRawY=event.rawY
                     val cy=height/2f
                     val localX=event.x; val localY=event.y
-                    // Convert the touch point back into the line's unrotated coordinate system.
+                    // Map the touch point into the line's unrotated coordinate system.
                     val radians=Math.toRadians((-angleDegrees).toDouble())
                     val cx=lineLeft+lineWidth/2f
                     val dx=localX-cx; val dy=localY-cy
                     val ux=(dx*kotlin.math.cos(radians)-dy*kotlin.math.sin(radians))+cx
-                    mode=when { isLineSelected && kotlin.math.abs(ux-lineLeft)<handle*2 -> 1; isLineSelected && kotlin.math.abs(ux-(lineLeft+lineWidth))<handle*2 -> 2; else -> 0 }
+                    val uy=(dx*kotlin.math.sin(radians)+dy*kotlin.math.cos(radians))+cy
+                    mode=when {
+                        isLineSelected && kotlin.math.hypot((ux-lineLeft).toDouble(), (uy-cy).toDouble()) < handle*2 -> 1
+                        isLineSelected && kotlin.math.hypot((ux-(lineLeft+lineWidth)).toDouble(), (uy-cy).toDouble()) < handle*2 -> 2
+                        else -> 0
+                    }
+                    val radiansNow=Math.toRadians(angleDegrees.toDouble())
+                    if (mode == 1) {
+                        // Left endpoint is dragged; the right endpoint is the fixed pivot.
+                        pivotScreenX=lineLeft+lineWidth-(lineWidth/2f)*(1f-kotlin.math.cos(radiansNow).toFloat())
+                        pivotScreenY=p.y+cy+(lineWidth/2f)*kotlin.math.sin(radiansNow).toFloat()
+                    } else if (mode == 2) {
+                        // Right endpoint is dragged; the left endpoint is the fixed pivot.
+                        pivotScreenX=lineLeft+(lineWidth/2f)*(1f-kotlin.math.cos(radiansNow).toFloat())
+                        pivotScreenY=p.y+cy-(lineWidth/2f)*kotlin.math.sin(radiansNow).toFloat()
+                    }
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx=event.rawX-startX
                     when(mode) {
-                        0 -> { lineLeft=(lineLeft+dx).coerceIn(-lineWidth+dp(24).toFloat(), resources.displayMetrics.widthPixels.toFloat()-dp(24)); p.y=(p.y+(event.rawY-lastRawY)).toInt().coerceIn(-height, resources.displayMetrics.heightPixels); startX=event.rawX }
-                        1 -> { val next=(startWidth.toFloat()-dx).coerceAtLeast(dp(30).toFloat()); lineLeft=(lineLeft+dx).coerceAtLeast(0f); lineWidth=next; startWidth=next.toInt(); startX=event.rawX }
-                        2 -> { lineWidth=(startWidth.toFloat()+dx).coerceAtLeast(dp(30).toFloat()); startWidth=lineWidth.toInt(); startX=event.rawX }
+                        0 -> {
+                            lineLeft=(lineLeft+dx).coerceIn(-lineWidth+dp(24).toFloat(), resources.displayMetrics.widthPixels.toFloat()-dp(24))
+                            p.y=(p.y+(event.rawY-lastRawY)).toInt().coerceIn(-height, resources.displayMetrics.heightPixels)
+                            startX=event.rawX
+                        }
+                        1, 2 -> {
+                            // The opposite endpoint stays fixed. The dragged endpoint determines
+                            // both the new angle and the new length, like rotating a physical ruler.
+                            val vx=if (mode == 2) event.rawX-pivotScreenX else pivotScreenX-event.rawX
+                            val vy=if (mode == 2) event.rawY-pivotScreenY else pivotScreenY-event.rawY
+                            lineWidth=kotlin.math.hypot(vx.toDouble(), vy.toDouble()).toFloat().coerceAtLeast(dp(30).toFloat())
+                            angleDegrees=Math.toDegrees(kotlin.math.atan2(vy.toDouble(), vx.toDouble())).toFloat()
+                            val radians=Math.toRadians(angleDegrees.toDouble())
+                            val cos=kotlin.math.cos(radians).toFloat()
+                            val sin=kotlin.math.sin(radians).toFloat()
+                            val neededHeight=(kotlin.math.abs(sin)*lineWidth+dp(48)).toInt().coerceAtLeast(dp(48))
+                            p.height=neededHeight
+                            val cy=neededHeight/2f
+                            if (mode == 2) {
+                                // Right endpoint moves; left endpoint remains at the pivot.
+                                lineLeft=pivotScreenX-(lineWidth/2f)*(1f-cos)
+                                p.y=(pivotScreenY-cy+(lineWidth/2f)*sin).toInt()
+                            } else {
+                                // Left endpoint moves; right endpoint remains at the pivot.
+                                lineLeft=pivotScreenX-lineWidth+(lineWidth/2f)*(1f-cos)
+                                p.y=(pivotScreenY-cy-(lineWidth/2f)*sin).toInt()
+                            }
+                        }
                     }
                     lastRawY=event.rawY
                     val neededHeight=(kotlin.math.abs(kotlin.math.sin(Math.toRadians(angleDegrees.toDouble())))*lineWidth+dp(48)).toInt().coerceAtLeast(dp(48))
