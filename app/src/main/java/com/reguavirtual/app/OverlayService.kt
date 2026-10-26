@@ -38,7 +38,6 @@ class OverlayService : Service() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         createNotification()
         showBubble()
-        addLine()
     }
     private fun createNotification() {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -79,6 +78,12 @@ class OverlayService : Service() {
         row1.addView(btn("Excluir") { selected?.let { removeLine(it) } }, weight())
         row1.addView(btn("Limpar") { lines.toList().forEach { removeLine(it) } }, weight())
         content.addView(row1)
+        val rotateRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
+        rotateRow.addView(btn("↶ 15°") { selected?.rotateBy(-15f) }, weight())
+        rotateRow.addView(btn("↷ 15°") { selected?.rotateBy(15f) }, weight())
+        rotateRow.addView(btn("Zerar ângulo") { selected?.setAngle(0f) }, weight())
+        content.addView(rotateRow)
+        content.addView(TextView(this).apply { text="Gire a linha selecionada em passos de 15°"; textSize=12f; setTextColor(Color.DKGRAY) })
         content.addView(TextView(this).apply { text="Cor da linha selecionada"; setTextColor(Color.DKGRAY); setPadding(0,dp(8),0,0) })
         val row2 = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         row2.addView(btn("Cor anterior") { colorIndex=(colorIndex+colors.size-1)%colors.size; selected?.setColor(colors[colorIndex]) }, weight())
@@ -132,51 +137,81 @@ class OverlayService : Service() {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
         private var lineColor = colors[colorIndex]
         private var lineThickness = thickness.toFloat()
-        private var isSelected = false
+        private var isLineSelected = false
         private val handle = dp(12).toFloat()
-        private var mode = 0 // 0 move line, 1 resize left, 2 resize right
-        private var downX=0f; private var startX=0f; private var startWidth=0
+        private var mode = 0 // 0 move, 1 resize left, 2 resize right
+        private var startX=0f
+        private var startWidth=0
         private var lineWidth=resources.displayMetrics.widthPixels.toFloat()
         private var lineLeft=0f
+        private var angleDegrees=0f
         init { setLayerType(View.LAYER_TYPE_SOFTWARE, null); setBackgroundColor(Color.TRANSPARENT) }
         fun setColor(c: Int) { lineColor=c; invalidate() }
         fun setThickness(t: Int) { lineThickness=t.toFloat(); invalidate() }
-        fun setLineSelected(s: Boolean) { isSelected=s; invalidate() }
+        fun setLineSelected(s: Boolean) { isLineSelected=s; invalidate() }
+        fun rotateBy(degrees: Float) { setAngle(angleDegrees + degrees) }
+        fun setAngle(degrees: Float) {
+            angleDegrees = ((degrees % 360f) + 360f) % 360f
+            val p = layoutParamsOverlay
+            if (p != null) {
+                val radians = Math.toRadians(angleDegrees.toDouble())
+                val neededHeight = (kotlin.math.abs(kotlin.math.sin(radians)) * lineWidth + dp(48)).toInt().coerceAtLeast(dp(48))
+                p.height = neededHeight
+                try { wm.updateViewLayout(this, p) } catch (_: Exception) {}
+            }
+            invalidate()
+        }
         override fun onDraw(canvas: android.graphics.Canvas) {
             super.onDraw(canvas)
             val cy=height/2f
-            paint.color=lineColor; paint.strokeWidth=lineThickness; paint.strokeCap=android.graphics.Paint.Cap.ROUND
-            canvas.drawLine(lineLeft, cy, lineLeft+lineWidth, cy, paint)
-            if (isSelected) {
-                paint.color=Color.WHITE; paint.style=android.graphics.Paint.Style.FILL
-                canvas.drawCircle(lineLeft,cy,handle,paint); canvas.drawCircle(lineLeft+lineWidth,cy,handle,paint)
-                paint.color=Color.BLACK; paint.style=android.graphics.Paint.Style.STROKE; paint.strokeWidth=dp(1).toFloat()
-                canvas.drawCircle(lineLeft,cy,handle,paint); canvas.drawCircle(lineLeft+lineWidth,cy,handle,paint)
-                paint.style=android.graphics.Paint.Style.FILL
+            val x1=lineLeft
+            val x2=lineLeft+lineWidth
+            val centerX=(x1+x2)/2f
+            canvas.save()
+            canvas.rotate(angleDegrees, centerX, cy)
+            paint.color=lineColor; paint.strokeWidth=lineThickness; paint.strokeCap=android.graphics.Paint.Cap.ROUND; paint.style=android.graphics.Paint.Style.STROKE
+            canvas.drawLine(x1, cy, x2, cy, paint)
+            if (isLineSelected) {
+                paint.style=android.graphics.Paint.Style.FILL; paint.color=Color.WHITE
+                canvas.drawCircle(x1,cy,handle,paint); canvas.drawCircle(x2,cy,handle,paint)
+                paint.style=android.graphics.Paint.Style.STROKE; paint.color=Color.BLACK; paint.strokeWidth=dp(1).toFloat()
+                canvas.drawCircle(x1,cy,handle,paint); canvas.drawCircle(x2,cy,handle,paint)
             }
+            paint.style=android.graphics.Paint.Style.FILL
+            canvas.restore()
         }
         override fun onTouchEvent(event: MotionEvent): Boolean {
             val p=layoutParamsOverlay ?: return false
             when(event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    selectLine(this); downX=event.rawX; startX=event.rawX; startWidth=lineWidth.toInt()
-                    val local=event.x
-                    mode=when { isSelected && kotlin.math.abs(local-lineLeft)<handle*2 -> 1; isSelected && kotlin.math.abs(local-(lineLeft+lineWidth))<handle*2 -> 2; else -> 0 }
+                    selectLine(this); startX=event.rawX; startWidth=lineWidth.toInt(); lastRawY=event.rawY
+                    val cy=height/2f
+                    val localX=event.x; val localY=event.y
+                    // Convert the touch point back into the line's unrotated coordinate system.
+                    val radians=Math.toRadians((-angleDegrees).toDouble())
+                    val cx=lineLeft+lineWidth/2f
+                    val dx=localX-cx; val dy=localY-cy
+                    val ux=(dx*kotlin.math.cos(radians)-dy*kotlin.math.sin(radians))+cx
+                    mode=when { isLineSelected && kotlin.math.abs(ux-lineLeft)<handle*2 -> 1; isLineSelected && kotlin.math.abs(ux-(lineLeft+lineWidth))<handle*2 -> 2; else -> 0 }
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx=event.rawX-startX
                     when(mode) {
-                        0 -> { p.x=(p.x+dx).toInt().coerceIn(-resources.displayMetrics.widthPixels, resources.displayMetrics.widthPixels); startX=event.rawX }
+                        0 -> { lineLeft=(lineLeft+dx).coerceIn(-lineWidth+dp(24).toFloat(), resources.displayMetrics.widthPixels.toFloat()-dp(24)); p.y=(p.y+(event.rawY-lastRawY)).toInt().coerceIn(-height, resources.displayMetrics.heightPixels); startX=event.rawX }
                         1 -> { val next=(startWidth.toFloat()-dx).coerceAtLeast(dp(30).toFloat()); lineLeft=(lineLeft+dx).coerceAtLeast(0f); lineWidth=next; startWidth=next.toInt(); startX=event.rawX }
                         2 -> { lineWidth=(startWidth.toFloat()+dx).coerceAtLeast(dp(30).toFloat()); startWidth=lineWidth.toInt(); startX=event.rawX }
                     }
+                    lastRawY=event.rawY
+                    val neededHeight=(kotlin.math.abs(kotlin.math.sin(Math.toRadians(angleDegrees.toDouble())))*lineWidth+dp(48)).toInt().coerceAtLeast(dp(48))
+                    if (p.height != neededHeight) p.height=neededHeight
                     try { wm.updateViewLayout(this,p) } catch (_: Exception) {}; invalidate(); return true
                 }
                 MotionEvent.ACTION_UP -> { return true }
             }
             return true
         }
+        private var lastRawY=0f
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onDestroy() {
