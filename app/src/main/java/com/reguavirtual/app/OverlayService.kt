@@ -120,11 +120,11 @@ class OverlayService : Service() {
         line.layoutParamsOverlay=p
         wm.addView(line, p); lines.add(line); selectLine(line)
     }
-    private fun selectLine(line: LineView) { selected?.setSelected(false); selected=line; line.setSelected(true) }
+    private fun selectLine(line: LineView) { selected?.setLineSelected(false); selected=line; line.setLineSelected(true) }
     private fun removeLine(line: LineView) {
         try { wm.removeView(line) } catch (_: Exception) {}
         lines.remove(line)
-        if (selected === line) { selected=lines.lastOrNull(); selected?.setSelected(true) }
+        if (selected === line) { selected=lines.lastOrNull(); selected?.setLineSelected(true) }
     }
 
     private inner class LineView : View(this@OverlayService) {
@@ -141,7 +141,7 @@ class OverlayService : Service() {
         init { setLayerType(View.LAYER_TYPE_SOFTWARE, null); setBackgroundColor(Color.TRANSPARENT) }
         fun setColor(c: Int) { lineColor=c; invalidate() }
         fun setThickness(t: Int) { lineThickness=t.toFloat(); invalidate() }
-        fun setSelected(s: Boolean) { isSelected=s; invalidate() }
+        fun setLineSelected(s: Boolean) { isSelected=s; invalidate() }
         override fun onDraw(canvas: android.graphics.Canvas) {
             super.onDraw(canvas)
             val cy=height/2f
@@ -168,8 +168,8 @@ class OverlayService : Service() {
                     val dx=event.rawX-startX
                     when(mode) {
                         0 -> { p.x=(p.x+dx).toInt().coerceIn(-resources.displayMetrics.widthPixels, resources.displayMetrics.widthPixels); startX=event.rawX }
-                        1 -> { val next=(startWidth-dx).coerceAtLeast(dp(30)); lineLeft=(lineLeft+dx).coerceAtLeast(0f); lineWidth=next.toFloat(); startWidth=next; startX=event.rawX }
-                        2 -> { lineWidth=(startWidth+dx).coerceAtLeast(dp(30)).toFloat(); startWidth=lineWidth.toInt(); startX=event.rawX }
+                        1 -> { val next=(startWidth.toFloat()-dx).coerceAtLeast(dp(30).toFloat()); lineLeft=(lineLeft+dx).coerceAtLeast(0f); lineWidth=next; startWidth=next.toInt(); startX=event.rawX }
+                        2 -> { lineWidth=(startWidth.toFloat()+dx).coerceAtLeast(dp(30).toFloat()); startWidth=lineWidth.toInt(); startX=event.rawX }
                     }
                     try { wm.updateViewLayout(this,p) } catch (_: Exception) {}; invalidate(); return true
                 }
